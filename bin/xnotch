@@ -1,0 +1,60 @@
+#!/usr/bin/env python3
+"""xnotch: manage X-Notch feeds (~/.config/xnotch/accounts.json is the source of truth)."""
+import json, os, re, subprocess, sys, tempfile
+CFG = os.path.expanduser("~/.config/xnotch/accounts.json")
+CACHE = os.path.expanduser("~/.cache/xnotch")
+PALETTE = ["#8b7cf6", "#5fa89a", "#d77fa8", "#e0a458", "#5b8def", "#c9a96e", "#7fc4d7", "#b48ede", "#e07f7f", "#8fcf8a"]
+HELP = """usage: xnotch <command>
+  add <handle>      add an X account (with or without @)
+  remove <handle>   remove an account and its cached avatar/feed
+  list              list accounts
+  on|off|toggle     start/stop the widget (wraps xnotch-toggle)
+  help              this help"""
+
+def load():
+    try:
+        with open(CFG) as f: a = json.load(f)
+        return [x if isinstance(x, dict) else {"handle": x} for x in a if x]
+    except FileNotFoundError: return []
+
+def save(a):
+    os.makedirs(os.path.dirname(CFG), exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(CFG), prefix=".accounts.", suffix=".tmp")
+    with os.fdopen(fd, "w") as f: json.dump(a, f, indent=2); f.write("\n")
+    os.replace(tmp, CFG)
+
+def norm(h):
+    h = h.strip().lstrip("@")
+    if not re.fullmatch(r"[A-Za-z0-9_]{1,15}", h):
+        sys.exit(f"xnotch: invalid handle '{h}' (letters, digits, _ ; max 15)")
+    return h
+
+def main(argv):
+    cmd = argv[0] if argv else "help"
+    if cmd in ("help", "-h", "--help"): print(HELP); return
+    if cmd in ("on", "off", "toggle"):
+        os.execvp(os.path.expanduser("~/.local/bin/xnotch-toggle"), ["xnotch-toggle", cmd])
+    if cmd in ("list", "ls"):
+        for x in load(): print("@" + x["handle"], x.get("color", ""))
+        return
+    if cmd in ("add", "remove", "rm") and len(argv) == 2:
+        h = norm(argv[1]); a = load()
+        idx = next((i for i, x in enumerate(a) if x["handle"].lower() == h.lower()), -1)
+        if cmd == "add":
+            if idx >= 0: print(f"@{a[idx]['handle']} already added"); return
+            used = {x.get("color", "").lower() for x in a}
+            color = next((c for c in PALETTE if c not in used), PALETTE[len(a) % len(PALETTE)])
+            a.append({"handle": h, "color": color}); save(a)
+            subprocess.run([os.path.expanduser("~/.local/bin/xnotch-avatar"), h], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            print(f"added @{h}")
+        else:
+            if idx < 0: sys.exit(f"xnotch: @{h} not found")
+            real = a.pop(idx)["handle"]; save(a)
+            for ext in (".img", ".feed.json"):
+                try: os.remove(os.path.join(CACHE, real + ext))
+                except FileNotFoundError: pass
+            print(f"removed @{real}")
+        return
+    print(HELP, file=sys.stderr); sys.exit(2)
+
+if __name__ == "__main__": main(sys.argv[1:])

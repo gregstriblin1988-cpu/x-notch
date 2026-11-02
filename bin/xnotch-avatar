@@ -1,0 +1,6 @@
+#!/bin/bash
+# xnotch-avatar <handle>: cache avatar to ~/.cache/xnotch/<handle>.img (7 day TTL); prints path or nothing
+h="${1//[^A-Za-z0-9_]/}"; [ -z "$h" ] && exit 1
+d="$HOME/.cache/xnotch"; mkdir -p "$d"; f="$d/$h.img"
+if [ -s "$f" ] && [ -z "$(find "$f" -mtime +7)" ]; then echo "$f"; exit 0; fi
+if curl -fsSL -m 15 "https://unavatar.io/x/$h?fallback=false" -o "$f.tmp" && file -b --mime-type "$f.tmp" | grep -q '^image/'; then mv "$f.tmp" "$f"; echo "$f"; else rm -f "$f.tmp"; [ -s "$f" ] && echo "$f"; fi

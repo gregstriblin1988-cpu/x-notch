@@ -1,0 +1,8 @@
+config/token
+token
+*.token
+.cache/
+cache/
+*.img
+*.feed.json
+*.bak*

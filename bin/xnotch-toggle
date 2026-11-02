@@ -1,0 +1,9 @@
+#!/bin/bash
+# xnotch-toggle [on|off]: start/stop the X-Notch Quickshell widget
+P="$HOME/.config/quickshell/xnotch"
+running() { pgrep -f "quickshell -n -p $P" >/dev/null; }
+case "${1:-toggle}" in
+  on) running || setsid -f quickshell -n -p "$P" >/tmp/xnotch.log 2>&1 ;;
+  off) pkill -f "quickshell -n -p $P" ;;
+  *) if running; then pkill -f "quickshell -n -p $P"; else setsid -f quickshell -n -p "$P" >/tmp/xnotch.log 2>&1; fi ;;
+esac
