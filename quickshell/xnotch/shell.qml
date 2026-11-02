@@ -431,27 +431,69 @@ ShellRoot {
         id: list
         visible: win.feed.status === "ok"
         x: 14; y: 52; width: parent.width - 28; height: parent.height - 64
-        clip: true; spacing: 4
+        clip: true; spacing: 2; boundsBehavior: Flickable.StopAtBounds; cacheBuffer: 1200
         model: win.feed.posts || []
         ScrollBar.vertical: ScrollBar {
           contentItem: Rectangle { implicitWidth: 4; radius: 2
             gradient: Gradient { GradientStop { position: 0; color: rootShell.violet } GradientStop { position: 1; color: rootShell.mint } } }
         }
         delegate: Item {
+          id: card
           required property var modelData
+          readonly property var p: modelData
+          readonly property var q: modelData.quoted || null
           width: list.width - 8
-          height: col.implicitHeight + 18
+          height: cardCol.implicitHeight + 22
+          Rectangle { anchors.fill: parent; radius: 10; color: cardMa.containsMouse ? "#181a2a" : "transparent" }
+          MouseArea { id: cardMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+            onClicked: Quickshell.execDetached(["xdg-open", card.p.url]) }
           Column {
-            id: col
-            x: 6; y: 8; width: parent.width - 12; spacing: 5
-            Text { text: "<b>" + modelData.name + "</b> <font color='#8a8aa0'>@" + modelData.handle + " · " + win.ago(modelData.created_at) + "</font>"
-                   textFormat: Text.StyledText; color: "#e6e6f0"; font.pixelSize: 12 }
-            Text { width: parent.width; text: modelData.text; wrapMode: Text.Wrap; color: "#d8d8e4"; font.pixelSize: 12 }
-            Text { text: "💬 " + modelData.replies + "   🔁 " + modelData.reposts + "   ♥ " + modelData.likes; color: "#8a8aa0"; font.pixelSize: 10 }
+            id: cardCol
+            x: 8; y: 10; width: parent.width - 16; spacing: 4
+            Text { visible: card.p.header !== ""; x: 46; text: "↻  " + card.p.header; color: "#8a8aa0"; font.pixelSize: 11; font.bold: true }
+            Row {
+              width: parent.width; spacing: 10
+              XAvatar { src: card.p.avatar; size: 36 }
+              Column {
+                width: parent.width - 46; spacing: 6
+                Text { width: parent.width; elide: Text.ElideRight; textFormat: Text.StyledText; font.pixelSize: 13; color: "#e6e6f0"
+                  text: "<b>" + win.esc(card.p.name) + "</b>" + (card.p.verified ? " <font color='#1d9bf0'>✓</font>" : "")
+                        + " <font color='#7a7a92'>@" + card.p.handle + " · " + win.ago(card.p.created_at) + "</font>" }
+                Text { width: parent.width; visible: card.p.html !== ""; text: card.p.html; textFormat: Text.RichText; wrapMode: Text.Wrap
+                  color: "#d8d8e4"; font.pixelSize: 13; lineHeight: 1.15
+                  onLinkActivated: (l) => Quickshell.execDetached(["xdg-open", l])
+                  HoverHandler { enabled: parent.hoveredLink !== ""; cursorShape: Qt.PointingHandCursor } }
+                XMedia { width: parent.width; media: card.p.media || [] }
+                // quoted post
+                Rectangle {
+                  visible: card.q !== null; width: parent.width; radius: 12; color: "transparent"; border.color: "#2a2c42"
+                  height: visible ? qCol.implicitHeight + 18 : 0
+                  Column { id: qCol; x: 10; y: 9; width: parent.width - 20; spacing: 5
+                    Row { spacing: 6
+                      XAvatar { src: card.q ? card.q.avatar : ""; size: 18 }
+                      Text { textFormat: Text.StyledText; font.pixelSize: 12; color: "#e6e6f0"; anchors.verticalCenter: parent.verticalCenter
+                        text: card.q ? "<b>" + win.esc(card.q.name) + "</b>" + (card.q.verified ? " <font color='#1d9bf0'>✓</font>" : "")
+                              + " <font color='#7a7a92'>@" + card.q.handle + " · " + win.ago(card.q.created_at) + "</font>" : "" } }
+                    Text { width: parent.width; text: card.q ? card.q.html : ""; textFormat: Text.RichText; wrapMode: Text.Wrap
+                      color: "#d0d0dc"; font.pixelSize: 12; maximumLineCount: 6; elide: Text.ElideRight
+                      onLinkActivated: (l) => Quickshell.execDetached(["xdg-open", l]) }
+                    XMedia { width: parent.width; media: card.q ? (card.q.media || []) : [] }
+                  }
+                  MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; z: -1
+                    onClicked: Quickshell.execDetached(["xdg-open", "https://x.com/" + card.q.handle + "/status/" + card.q.id]) }
+                }
+                Row {
+                  spacing: 0; width: parent.width
+                  Repeater {
+                    model: [["💬", card.p.replies, "#8a8aa0"], ["↻", card.p.reposts, "#00ba7c"], ["♥", card.p.likes, "#f91880"], ["📊", card.p.views, "#8a8aa0"]]
+                    Text { required property var modelData; width: parent.width / 4; color: "#8a8aa0"; font.pixelSize: 11; textFormat: Text.StyledText
+                      text: "<font color='" + modelData[2] + "'>" + modelData[0] + "</font> " + win.fmt(modelData[1]) }
+                  }
+                }
+              }
+            }
           }
           Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: "#1f2033" }
-          MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor
-            onClicked: Quickshell.execDetached(["xdg-open", "https://x.com/" + modelData.handle + "/status/" + modelData.id]) }
         }
       }
     }
@@ -487,6 +529,9 @@ ShellRoot {
       feedProc.handle = h;
       feedProc.running = true;
     }
+    function esc(t) { return String(t || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+    function fmt(n) { n = n || 0; if (n >= 1e6) return (n / 1e6).toFixed(n >= 1e7 ? 0 : 1).replace(/\.0$/, "") + "M";
+      if (n >= 1e3) return (n / 1e3).toFixed(n >= 1e4 ? 0 : 1).replace(/\.0$/, "") + "K"; return "" + n; }
     function ago(iso) {
       if (!iso) return "";
       const s = (Date.now() - new Date(iso).getTime()) / 1000;

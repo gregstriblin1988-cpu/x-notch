@@ -1,27 +1,84 @@
 #!/usr/bin/env python3
-"""xnotch-fetch <handle>: print JSON feed for an X handle. Uses bearer token in ~/.config/xnotch/token (X API v2).
-Output: {"status": "ok"|"no_token"|"error", "handle":..., "posts":[...], "message":...}. Cached 10 min in ~/.cache/xnotch."""
-import json, os, re, sys, time, urllib.request, urllib.parse
+"""xnotch-fetch <handle>: recent posts for an X account as rich cards (X API v2, bearer token).
+Output: {"status": "ok"|"no_token"|"error", "handle":..., "posts":[...], "message":...}. Cached 10 min in ~/.cache/xnotch.
+One user lookup + one timeline read per refresh; media/authors/referenced posts come in the same response via expansions."""
+import json, os, re, sys, time, html, urllib.request
 h = re.sub(r'[^A-Za-z0-9_]', '', sys.argv[1] if len(sys.argv) > 1 else '')
 out = lambda o: (print(json.dumps(o)), sys.exit(0))
 if not h: out({"status": "error", "handle": "", "posts": [], "message": "no handle"})
 tokf = os.path.expanduser('~/.config/xnotch/token')
 tok = open(tokf).read().strip() if os.path.exists(tokf) else ''
 if not tok: out({"status": "no_token", "handle": h, "posts": []})
-cache = os.path.expanduser(f'~/.cache/xnotch/{h}.feed.json')
+cdir = os.path.expanduser('~/.cache/xnotch'); os.makedirs(cdir, exist_ok=True)
+cache = f'{cdir}/{h}.feed2.json'
 if os.path.exists(cache) and time.time() - os.path.getmtime(cache) < 600:
     print(open(cache).read()); sys.exit(0)
 def get(url):
-    r = urllib.request.Request(url, headers={"Authorization": f"Bearer {tok}", "User-Agent": "xnotch"})
+    r = urllib.request.Request(url, headers={"Authorization": "Bearer " + tok, "User-Agent": "xnotch"})
     with urllib.request.urlopen(r, timeout=15) as f: return json.load(f)
+LINK, MENT = "#1d9bf0", "#1d9bf0"
+def rich(t, ent, media_urls):
+    """Escape text and color links/mentions/hashtags; t.co links -> display_url, media links dropped."""
+    spans = []
+    for u in (ent or {}).get("urls", []):
+        if u.get("url") in media_urls or u.get("media_key"): spans.append((u["start"], u["end"], ""))
+        else:
+            d = html.escape(u.get("display_url") or u.get("expanded_url") or u["url"])
+            spans.append((u["start"], u["end"], f"<a href='{html.escape(u.get('expanded_url') or u['url'])}' style='color:{LINK};text-decoration:none'>{d}</a>"))
+    for m in (ent or {}).get("mentions", []):
+        spans.append((m["start"], m["end"], f"<a href='https://x.com/{m['username']}' style='color:{MENT};text-decoration:none'>@{html.escape(m['username'])}</a>"))
+    for k in ("hashtags", "cashtags"):
+        for g in (ent or {}).get(k, []):
+            p = "#" if k == "hashtags" else "$"
+            spans.append((g["start"], g["end"], f"<span style='color:{LINK}'>{p}{html.escape(g['tag'])}</span>"))
+    spans.sort(); cp = list(t); o, i = [], 0   # X entity offsets are in code points
+    for s, e, rep in spans:
+        if s < i: continue
+        o.append(html.escape(html.unescape(''.join(cp[i:s])), quote=False)); o.append(rep); i = e
+    o.append(html.escape(html.unescape(''.join(cp[i:])), quote=False))
+    return ''.join(o).strip().replace("\n", "<br>")
 try:
-    u = get(f"https://api.x.com/2/users/by/username/{h}?user.fields=name")["data"]
-    t = get(f"https://api.x.com/2/users/{u['id']}/tweets?max_results=10&exclude=replies&tweet.fields=created_at,public_metrics")
-    posts = [{"name": u.get("name", h), "handle": h, "text": p["text"], "created_at": p.get("created_at", ""),
-              "replies": p.get("public_metrics", {}).get("reply_count", 0), "reposts": p.get("public_metrics", {}).get("retweet_count", 0),
-              "likes": p.get("public_metrics", {}).get("like_count", 0), "id": p["id"]} for p in t.get("data", [])]
+    u = get(f"https://api.x.com/2/users/by/username/{h}?user.fields=name,profile_image_url,verified")["data"]
+    t = get(f"https://api.x.com/2/users/{u['id']}/tweets?max_results=10&exclude=replies"
+            "&tweet.fields=created_at,public_metrics,attachments,entities,referenced_tweets,author_id"
+            "&expansions=attachments.media_keys,author_id,referenced_tweets.id,referenced_tweets.id.author_id,referenced_tweets.id.attachments.media_keys"
+            "&media.fields=url,preview_image_url,type,width,height,duration_ms"
+            "&user.fields=name,username,profile_image_url,verified")
+    inc = t.get("includes", {})
+    users = {x["id"]: x for x in inc.get("users", [])}; users[u["id"]] = {**u, "username": u.get("username", h)}
+    media = {m["media_key"]: m for m in inc.get("media", [])}
+    refs = {x["id"]: x for x in inc.get("tweets", [])}
+    def author(p):
+        a = users.get(p.get("author_id"), {})
+        return {"name": a.get("name", a.get("username", "")), "handle": a.get("username", ""),
+                "avatar": (a.get("profile_image_url") or "").replace("_normal.", "_bigger."), "verified": bool(a.get("verified"))}
+    def card(p):
+        ms = [media[k] for k in p.get("attachments", {}).get("media_keys", []) if k in media][:4]
+        mu = {x.get("url") for x in (p.get("entities") or {}).get("urls", []) if "/photo/" in (x.get("expanded_url") or "") or "/video/" in (x.get("expanded_url") or "")
+              or any("/status/" + r["id"] in (x.get("expanded_url") or "") for r in p.get("referenced_tweets", []) if r["type"] == "quoted")}
+        pm = p.get("public_metrics", {})
+        return {**author(p), "id": p["id"], "created_at": p.get("created_at", ""),
+                "html": rich(p.get("text", ""), p.get("entities"), mu),
+                "media": [{"type": m.get("type"), "src": m.get("url") or m.get("preview_image_url") or "",
+                           "w": m.get("width", 0), "h": m.get("height", 0), "dur": int(m.get("duration_ms", 0) / 1000)} for m in ms],
+                "replies": pm.get("reply_count", 0), "reposts": pm.get("retweet_count", 0) + pm.get("quote_count", 0),
+                "likes": pm.get("like_count", 0), "views": pm.get("impression_count", 0)}
+    posts = []
+    for p in t.get("data", []):
+        rt = next((r for r in p.get("referenced_tweets", []) if r["type"] == "retweeted"), None)
+        qt = next((r for r in p.get("referenced_tweets", []) if r["type"] == "quoted"), None)
+        if rt and rt["id"] in refs:
+            c = card(refs[rt["id"]]); c["header"] = (u.get("name") or h) + " reposted"; c["kind"] = "repost"
+        else:
+            c = card(p); c["header"] = ""; c["kind"] = "post"
+            if qt and qt["id"] in refs:
+                q = card(refs[qt["id"]]); c["kind"] = "quote"
+                c["quoted"] = {k: q[k] for k in ("name", "handle", "avatar", "verified", "created_at", "html", "media", "id")}
+        c["url"] = f"https://x.com/{c['handle'] or h}/status/{c['id']}"
+        posts.append(c)
     o = {"status": "ok", "handle": h, "posts": posts}
-    open(cache, 'w').write(json.dumps(o)); out(o)
+    open(cache + ".tmp", 'w').write(json.dumps(o)); os.replace(cache + ".tmp", cache); out(o)
 except Exception as e:
-    if os.path.exists(cache): print(open(cache).read()); sys.exit(0)
-    out({"status": "error", "handle": h, "posts": [], "message": str(e)[:200]})
+    for c in (cache,):
+        if os.path.exists(c): print(open(c).read()); sys.exit(0)
+    out({"status": "error", "handle": h, "posts": [], "message": str(e)[:200].replace(tok, "***")})
