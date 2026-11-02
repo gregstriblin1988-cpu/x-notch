@@ -110,6 +110,7 @@ ShellRoot {
     Timer { id: collapseTimer; interval: 600
       onTriggered: { if (win.holdOpen) { console.log("xnotch " + win.stamp() + " collapse held: editing"); return; }
                      if (hoverH.hovered) { console.log("xnotch " + win.stamp() + " collapse aborted: still hovered"); return; }
+                     if (win.cursorInside()) { console.log("xnotch " + win.stamp() + " collapse aborted: compositor cursor still inside (spurious wl_pointer leave)"); return; }
                      win.setExpanded(false, "left expanded rect for 600ms"); } }
 
     // Fixed (non-animated) target geometry so the input region never moves under the cursor.
@@ -134,6 +135,28 @@ ShellRoot {
       height: (win.expanded ? (win.sel >= 0 ? win.feedY + 500 : win.notchH) : 42) + 12
 
     }
+    // Hyprland sends wl_pointer.leave to this layer when its input region (mask) is resized or
+    // when the pointer crosses window/gap boundaries underneath, even though the cursor never left the
+    // notch; Qt then reports hovered=false and no new enter arrives until the next region/surface change.
+    // So a leave is only a hint: before collapsing we confirm with the compositor's real cursor position.
+    property real curX: -1
+    property real curY: -1
+    property double curAt: 0
+    function cursorInside() {
+      return Date.now() - curAt < 400 && curX >= hit.x && curX < hit.x + hit.width && curY >= hit.y && curY < hit.y + hit.height;
+    }
+    Process {
+      id: curProc
+      command: ["hyprctl", "cursorpos"]
+      stdout: StdioCollector {
+        onStreamFinished: {
+          const m = text.match(/(-?\d+),\s*(-?\d+)/); if (!m || !win.screen) return;
+          win.curX = +m[1] - win.screen.x - Math.round((win.screen.width - win.width) / 2);
+          win.curY = +m[2] - win.screen.y;
+          win.curAt = Date.now();
+        }
+      }
+    }
     // Single hover source, attached to the window root: hover passes to ancestors, so feed
     // delegates / avatar MouseAreas can never make it "leave". The mask limits it to hit.
     HoverHandler {
@@ -155,7 +178,9 @@ ShellRoot {
     // watchdog: keeps the single hover state authoritative and tracks the avatar under the cursor
     Timer { interval: 60; repeat: true; running: win.expanded
       onTriggered: {
+        if (!curProc.running) curProc.running = true;
         if (hoverH.hovered) { if (collapseTimer.running) collapseTimer.stop(); win.trackAvatar(hoverH.point.position.x, hoverH.point.position.y); }
+        else if (win.cursorInside()) { if (collapseTimer.running) collapseTimer.stop(); win.trackAvatar(win.curX, win.curY); }
         else if (!collapseTimer.running && !win.holdOpen) collapseTimer.start();
       } }
 
